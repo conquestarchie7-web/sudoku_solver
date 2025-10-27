@@ -1,185 +1,189 @@
-"""
-Implementation of Sudoku Solver 
-
-Plan: 
-    1. Load CSV with 1 million sudoku puzzles and choose one at random.
-    2.  First use efficient but limited Single candidate method.
-     - For each cell in the sudoku grid, create a node with its value (null or given) and possible values.
-     - Iterate for each cell, check row, column and box for existing values and remove from possible values.
-     - If a cell has only one possible value remaining, set it to that value.
-    3. Once iterated until solved or algorithm can no longer make progress, use brute force backtracking to solve the rest.
-     
-"""
-
-
-# Import pandas and numpy for data handling, random for random puzzle selection
 import pandas as pd
 import numpy as np
-import random 
+import random
+import time  
+import csv 
+import os
 
-# Define the CSV file name 
-FILE_NAME = 'sudoku.csv'
-PUZZLE_COLUMN_NAME = 'quizzes'
-
-# CONVERSION FUNCTION 
-def string_to_grid(puzzle_string):
-    """Converts an 81-digit string into a 9x9 NumPy array of integers."""
-    return np.array(list(puzzle_string), dtype=int).reshape(9, 9)
-
-# ATTEMPT TO LOAD A RANDOM PUZZLE, CONVERT TO GRID AND APPLY SINGLE CANDIDATE ALGORITHM
-try:
-    # Load the CSV file into a pandas DataFrame
-    df = pd.read_csv(FILE_NAME)
-    total_puzzles = len(df)
-
-    # Select a random index number between 0 and (total_puzzles - 1)
-    random_index = random.randint(0, total_puzzles - 1)
-
-    # Get the single puzzle string using the random index
-    random_puzzle_string = df[PUZZLE_COLUMN_NAME].iloc[random_index]
-    # random_puzzle_string = '800000000003600000070090200050007000000045700000100030001000090000050100400000000' # For testing purposes
-
-    # Convert the string into a 9x9 NumPy array, we will call it 'grid'
-    grid = string_to_grid(random_puzzle_string)
-
-    # Print the result 
-    print(f"Successfully loaded a random puzzle (Index: {random_index} of {total_puzzles - 1}):")
-    print("\n--- Random Puzzle ---")
-    print(grid)
-
-    # HELPER FUNCTION FOR BOX START INDEX
-    def get_box_start(index):
-        """ Calculates the starting row or column index of a 3x3 box. """
-        return (index // 3) * 3
-
-    # SIMPLE SUDOKU SOLVING ALGORITHM (SINGLE CANDIDATE METHOD)
-    def simple_algorithm(grid):
-        """ A simple Sudoku solving algorithm that fills in cells with only one possible value. """
-
-        grid_changed = False
+class SudokuSolver:
     
-        # Continuously loop until a full pass results in no changes
-        while True:
-            # We assume no change is made in this pass
-            made_a_placement = False
+    def __init__(self, filepath):
+        
+        # Constructor: Initializes the solver, keeps a copy of the original board
+        self.filepath = filepath
+        self.board = self.load_puzzle(filepath)
+        self.original_board = self.board.copy() 
+        
+        # Metrics
+        self.start_time = 0
+        self.end_time = 0
+        self.recursive_calls = 0
+        self.backtracks = 0
+
+    def load_puzzle(self, filepath):
+        """
+        Loads a puzzle from a .txt or .csv file
+        0, ' ', or '.' are treated as empty
+        Iterates through file and appends to board list
+        """
+        board = []
+        try:
+            with open(filepath, 'r') as f:
+                # First determine file type, start with CSV
+                if filepath.endswith('.csv'):
+                    reader = csv.reader(f)
+                    for row in reader:
+                        board.append([int(c) if c.isdigit() and c != '0' else 0 for c in row])
+                else: # Assume .txt
+                    for line in f:
+                        line = line.strip()
+                        if not line: continue
+                        # Handle comma-separated or just characters
+                        cells = line.split(',') if ',' in line else list(line)
+                        row = [int(c.strip()) if c.strip().isdigit() and c.strip() != '0' else 0 for c in cells]
+                        if len(row) == 9:
+                            board.append(row)
             
-            # --- Step 1 & 2: Calculate Possible Values (Candidates) for all empty cells ---
-            # This structure acts as your "node with possible values"
-            candidates = {}  # candidates[(r, c)] = set of possible values
+            # Validating board size
+            if len(board) != 9 or any(len(r) != 9 for r in board):
+                raise ValueError("Puzzle must be a 9x9 grid.")
             
-            # Iterate over all 81 cells
-            for r in range(9):
-                for c in range(9):
-                    if grid[r, c] == 0:  # If the cell is empty
-                        
-                        # Start with all possible values (1 to 9)
-                        possible_values = set(range(1, 10))
-                        
-                        # Check Row: Remove existing values from possible_values
-                        # The grid[r, :] slice is the entire row
-                        possible_values.difference_update(grid[r, :])
-                        
-                        # Check Column: Remove existing values
-                        # The grid[:, c] slice is the entire column
-                        possible_values.difference_update(grid[:, c])
-                        
-                        # Check 3x3 Box: Remove existing values
-                        r_start = get_box_start(r)
-                        c_start = get_box_start(c)
-                        box = grid[r_start:r_start+3, c_start:c_start+3]
-                        possible_values.difference_update(box.flatten())
-                        
-                        # Store the remaining candidates
-                        candidates[(r, c)] = possible_values
+            print(f"Successfully loaded puzzle from: {filepath}")
+            # Convert to numpy array
+            return np.array(board, dtype=int)
+
+        except FileNotFoundError:
+            print(f"Error: File not found at {filepath}")
+            exit(1)
+        except Exception as e:
+            print(f"Error loading puzzle: {e}")
+            exit(1)
+
+    def print_board(self, board=None):
+        # Prints the board in a readable format
+        if board is None:
+            board = self.board
             
-            # --- Step 3: Check for Naked Singles (Only one candidate for a cell) ---
-            for (r, c), possible_values in candidates.items():
-                if len(possible_values) == 1:
-                    # Found a Naked Single!
-                    value = possible_values.pop()
-                    grid[r, c] = value
-                    made_a_placement = True
-                    grid_changed = True
-                    
-            # If we made a change, we break this inner loop and start the process over 
-            # to re-evaluate all candidates based on the new number placed.
-            if made_a_placement:
-                continue
-                
-            # --- Check for Hidden Singles (Only one cell in a unit can hold a value) ---
-            # If no Naked Singles were found, we look for Hidden Singles
-            for value in range(1, 10):
-                # Check Rows
-                for r in range(9):
-                    # Get all empty cells in this row
-                    empty_cells = [(r, c) for c in range(9) if grid[r, c] == 0]
-                    
-                    # Check which of these empty cells can accept 'value'
-                    can_hold_value = [(r, c) for r_cell, c_cell in empty_cells if value in candidates[(r_cell, c_cell)]]
+        print("\n+-------+-------+-------+")
+        for i in range(9):
+            if i % 3 == 0 and i != 0:
+                print("|-------+-------+-------|")
+            row_str = "| "
+            for j in range(9):
+                if j % 3 == 0 and j != 0:
+                    row_str += "| "
+                cell = str(board[i, j]) if board[i, j] != 0 else '.'
+                row_str += cell + " "
+            row_str += "|"
+            print(row_str)
+        print("+-------+-------+-------+")
+    
+    def is_valid_placement(self, grid, row, col, num):
+        """Checks if placing 'num' at (row, col) is valid"""
+        # Check Row
+        if num in grid[row, :]:
+            return False
+        # Check Column
+        if num in grid[:, col]:
+            return False
+        # Check 3x3 Box
+        r_start = (row // 3) * 3
+        c_start = (col // 3) * 3
+        if num in grid[r_start:r_start+3, c_start:c_start+3]:
+            return False
+        return True
 
-                    if len(can_hold_value) == 1:
-                        # Found a Hidden Single in the row!
-                        r_place, c_place = can_hold_value[0]
-                        grid[r_place, c_place] = value
-                        made_a_placement = True
-                        grid_changed = True
-                        
-                # Check Columns (similar logic)
-                for c in range(9):
-                    empty_cells = [(r, c) for r in range(9) if grid[r, c] == 0]
-                    can_hold_value = [(r, c) for r_cell, c_cell in empty_cells if value in candidates[(r_cell, c_cell)]]
-                    if len(can_hold_value) == 1:
-                        r_place, c_place = can_hold_value[0]
-                        grid[r_place, c_place] = value
-                        made_a_placement = True
-                        grid_changed = True
-                        
-                # Check Boxes (similar logic)
-                for r_start in range(0, 9, 3):
-                    for c_start in range(0, 9, 3):
-                        # Find all empty cells in this box
-                        box_empty_cells = []
-                        for r in range(r_start, r_start + 3):
-                            for c in range(c_start, c_start + 3):
-                                if grid[r, c] == 0:
-                                    box_empty_cells.append((r, c))
-                        
-                        # Check which of these empty cells can accept 'value'
-                        can_hold_value = [(r, c) for r_cell, c_cell in box_empty_cells if value in candidates[(r_cell, c_cell)]]
+    def find_empty_cell(self, grid):
+        """Finds the next empty cell (0)"""
+        for r in range(9):
+            for c in range(9):
+                if grid[r, c] == 0:
+                    return r, c
+        return None
+    
+    def _solve_backtracking(self):
+        """Recursive solver"""
+        
+        # Metric 1: Count recursive calls
+        self.recursive_calls += 1
 
-                        if len(can_hold_value) == 1:
-                            r_place, c_place = can_hold_value[0]
-                            grid[r_place, c_place] = value
-                            made_a_placement = True
-                            grid_changed = True
+        empty_cell = self.find_empty_cell(self.board)
+        if not empty_cell:
+            return True  # Base case: Solved
+
+        row, col = empty_cell
+
+        for num in range(1, 10):
+            if self.is_valid_placement(self.board, row, col, num):
+                self.board[row, col] = num
+
+                if self._solve_backtracking():  
+                    return True # Solution found
+
+                # Metric 2: Count backtracks
+                self.backtracks += 1
+                self.board[row, col] = 0 # Backtrack
+
+        return False # Triggers backtracking
+
+    def solve(self):
+        """Public method to run the solver and print metrics"""
+        print("Initial Board:")
+        self.print_board(self.original_board)
+        
+        # Metric 3: Track execution time
+        self.start_time = time.perf_counter()
+        
+        if self._solve_backtracking():
+            self.end_time = time.perf_counter()
+            print("\n--- Sudoku Solved! ---")
+            self.print_board(self.board)
+        else:
+            self.end_time = time.perf_counter()
+            print("\n--- No solution exists for this puzzle. ---")
             
-            # If we made a placement in either the Naked or Hidden Single checks, 
-            # restart the whole candidate generation loop
-            if made_a_placement:
-                continue
-            else:
-                # If no placements were made in an entire pass, the puzzle is either 
-                # solved, or we need advanced techniques.
-                break
+        self.print_metrics()
 
-        return grid, grid_changed
+    def print_metrics(self):
+        """Prints all collected performance metrics."""
+        total_time_ms = (self.end_time - self.start_time) * 1000
+        print("\n--- Solver Metrics ---")
+        print(f"Total Execution Time: {total_time_ms:.4f} ms")
+        print(f"Total Recursive Calls: {self.recursive_calls}")
+        print(f"Total Backtracks:      {self.backtracks}")
 
 
-    # Apply the simple algorithm
-    solved_SC_grid, solved_fully = simple_algorithm(grid.copy()) # Use .copy() to avoid modifying the original
+# EXECUTION CODE
 
-    print("\n--- Partially/Fully Solved Grid (Single Candidate Method) ---")
-    print(solved_SC_grid)
+# 1. Create a puzzle
+puzzle_content = """
+5,3,0,0,7,0,0,0,0
+6,0,0,1,9,5,0,0,0
+0,9,8,0,0,0,0,6,0
+8,0,0,0,6,0,0,0,3
+4,0,0,8,0,3,0,0,1
+7,0,0,0,2,0,0,0,6
+0,6,0,0,0,0,2,8,0
+0,0,0,4,1,9,0,0,5
+0,0,0,0,8,0,0,7,9
+"""
 
-    print("\nWould you like to BRUTE FORCE puzzle to solutution? (y to continue, any other key to exit)")
-    BF_response = input()
-    if(BF_response == 'y'):
-        print("Beginning now...")
+# Create file
+try:
+    with open("puzzle.txt", "w") as f:
+        f.write(puzzle_content.strip())
+except IOError as e:
+    print(f"Could not write puzzle file: {e}")
+
+# 2. Run the solver
+if __name__ == "__main__":
+    
+    # You can point this to any compatible .txt or .csv file 
+    puzzle_file = "puzzle.txt" 
+    
+    # Check if file exists and Execute solver
+    if os.path.exists(puzzle_file):
+        solver = SudokuSolver(puzzle_file)
+        solver.solve()
     else:
-        print("Exiting program.")
-        exit()
-
-except FileNotFoundError:
-    print(f"Error: The file '{FILE_NAME}' was not found. Please ensure the CSV is in the same folder.")
-except KeyError:
-    print(f"Error: Column '{PUZZLE_COLUMN_NAME}' not found in the CSV. Check the column name in your file.")
+        print(f"Sample file '{puzzle_file}' not found. Please create it.")
